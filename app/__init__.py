@@ -1,0 +1,1 @@
+"""VIGISCAM AI worker package."""

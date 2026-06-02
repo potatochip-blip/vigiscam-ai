@@ -1,0 +1,12 @@
+# VIGISCAM AI worker — self-hosted open models.
+# Pinned to compatible ranges; the torch CPU wheel is selected in the
+# Dockerfile to keep the image small (no CUDA) for the default CPU build.
+fastapi>=0.115,<0.116
+uvicorn[standard]>=0.32,<0.35
+pydantic>=2.9,<3
+pydantic-settings>=2.6,<3
+numpy>=1.26,<3
+sentence-transformers>=3.3,<4
+# torch is pulled in by sentence-transformers; the Dockerfile installs the
+# CPU wheel explicitly. On a GPU node, install the matching CUDA wheel and
+# set VIGISCAM_AI_DEVICE=cuda.
