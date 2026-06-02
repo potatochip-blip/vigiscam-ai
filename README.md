@@ -7,6 +7,12 @@ engine from its in-process deterministic stub to a real model
 (`source=EXTERNAL` in the backend's AI-decision audit). The backend keeps its
 stubs as the permanent fallback — this service is always optional.
 
+> **Status:** deployed to Azure Container Apps and verified live end-to-end —
+> NLP, embeddings, insights, OSINT, and the deepfake-image authenticity check
+> all confirmed returning `source=EXTERNAL` with the full decision envelope.
+> Runs on a 2 vCPU / 4 GiB Consumption profile (the image model loads alongside
+> MiniLM without needing a dedicated node).
+
 ## What's real today
 
 A single open embedding model — **`all-MiniLM-L6-v2`** (384-dim, ~80 MB,
