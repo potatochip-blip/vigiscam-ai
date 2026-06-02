@@ -7,6 +7,11 @@ pydantic>=2.9,<3
 pydantic-settings>=2.6,<3
 numpy>=1.26,<3
 sentence-transformers>=3.3,<4
-# torch is pulled in by sentence-transformers; the Dockerfile installs the
-# CPU wheel explicitly. On a GPU node, install the matching CUDA wheel and
-# set VIGISCAM_AI_DEVICE=cuda.
+# Heavy authenticity tier (image deepfake + voice spoof). transformers is
+# already pulled in by sentence-transformers; these add image + audio I/O.
+transformers>=4.41,<5
+pillow>=10,<13
+librosa>=0.10,<1        # audio decode + resample to 16 kHz for wav2vec2
+soundfile>=0.12,<1
+# torch / torchaudio are installed as CPU wheels in the Dockerfile. On a GPU
+# node, install the matching CUDA wheels and set VIGISCAM_AI_DEVICE=cuda.

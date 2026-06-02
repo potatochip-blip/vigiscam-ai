@@ -1,96 +1,141 @@
 """POST /authenticity/{checkType} — authenticity verification suite.
 
-This is the honest tier boundary. Real face/voice/scene deepfake detection
-requires heavy vision/audio models (and a GPU) plus the raw media — a major
-sub-project of its own. Rather than fake a verdict, this service:
+Routing:
+  DUAL_AUTH, CAM_VIGUARD                         → deterministic challenge/
+                                                   fingerprint checks (real)
+  LIVE_FACE_SEAL, SCENE_SEAL, ANTI_FAKE_VIDEO    → deepfake image model (vision)
+  VOICE_MATCH_SEAL                               → voice-spoof model (audio)
 
-  - returns INCONCLUSIVE (low score) by default for the ML-heavy checks
-    (LIVE_FACE_SEAL, VOICE_MATCH_SEAL, SCENE_SEAL, ANTI_FAKE_VIDEO) until a
-    real model is configured (VIGISCAM_AI_DEEPFAKE_IMAGE_MODEL etc.);
-  - performs a genuine, lightweight check where the payload carries a usable
-    deterministic signal (CAM_VIGUARD device-fingerprint consistency,
-    DUAL_AUTH challenge match).
-
-Wiring a real model: set the model env var and implement the corresponding
-branch — the contract (result/score/modelVersion/metadata) stays identical,
-so the backend needs no change.
+The heavy checks need media in the payload (imageBase64/imageUrl,
+audioBase64/audioUrl). With no media or an unloadable model they return
+INCONCLUSIVE rather than guessing. Every response carries the decision
+envelope (model, version, confidence, reason codes, risk score, evidence ref).
 """
 from __future__ import annotations
 
 from fastapi import APIRouter
 
+from ..audio import analyze_audio
 from ..config import get_settings
+from ..decision import Decision, Tier
+from ..media import load_audio_bytes, load_image_bytes
 from ..schemas import AuthenticityRequest, AuthenticityResponse
+from ..vision import analyze_image
 
 router = APIRouter()
 
-MODEL_VERSION = "authenticity-baseline-1.0.0"
+BASE_VERSION = "authenticity-1.1.0"
+IMAGE_CHECKS = {"LIVE_FACE_SEAL", "SCENE_SEAL", "ANTI_FAKE_VIDEO"}
 
-# Checks that need a heavy ML model + raw media to produce a real verdict.
-ML_HEAVY = {"LIVE_FACE_SEAL", "VOICE_MATCH_SEAL", "SCENE_SEAL", "ANTI_FAKE_VIDEO"}
+
+def _envelope(model_used: str, confidence: float, risk: float, reasons: list[str], tier: str, ev: str | None) -> dict:
+    requires_review = confidence < get_settings().review_confidence_threshold
+    if requires_review:
+        reasons = [*reasons, "LOW_CONFIDENCE_REVIEW"]
+    return Decision(
+        model_used=model_used,
+        model_version=BASE_VERSION,
+        confidence=confidence,
+        risk_score=risk,
+        reason_codes=reasons,
+        tier=tier,
+        requires_human_review=requires_review,
+        evidence_ref=ev,
+    ).as_dict()
+
+
+def _media_verdict(check: str, res: dict | None, ev: str | None) -> AuthenticityResponse:
+    """Map a vision/audio result into the response + decision envelope."""
+    model_used = (res or {}).get("model") or "n/a"
+    if res is None:
+        return AuthenticityResponse(
+            result="INCONCLUSIVE",
+            score=0.0,
+            modelVersion=BASE_VERSION,
+            metadata={"check": check, "reason": "no media, model unavailable, or inference failed"},
+            decision=_envelope(model_used, 0.0, 0.0, ["NO_VERDICT"], Tier.SELF_HOSTED, ev),
+        )
+    if not res.get("labels_recognized"):
+        return AuthenticityResponse(
+            result="INCONCLUSIVE",
+            score=0.0,
+            modelVersion=BASE_VERSION,
+            metadata={"check": check, "topLabel": res.get("top_label"), "reason": "label mapping unrecognized"},
+            decision=_envelope(model_used, 0.0, 0.0, ["UNMAPPED_LABELS"], Tier.SELF_HOSTED, ev),
+        )
+
+    fake_prob = float(res["fake_prob"])
+    real_prob = float(res["real_prob"])
+    total = fake_prob + real_prob or 1.0
+    fake_norm = fake_prob / total
+    is_fake = fake_prob > real_prob
+    confidence = float(max(fake_prob, real_prob) / total * 100)
+    risk = float(fake_norm * 100)
+    reasons = [
+        "DEEPFAKE_IMAGE_MODEL" if check in IMAGE_CHECKS else "VOICE_SPOOF_MODEL",
+        f"TOP_LABEL:{res.get('top_label')}:{round(float(res.get('top_score', 0)), 3)}",
+        "FAKE_DOMINANT" if is_fake else "REAL_DOMINANT",
+    ]
+    return AuthenticityResponse(
+        result="FAIL" if is_fake else "PASS",  # FAIL = not authentic (likely fake)
+        score=round(confidence, 1),
+        modelVersion=BASE_VERSION,
+        metadata={"check": check, "fakeProbability": round(fake_norm, 3), "topLabel": res.get("top_label")},
+        decision=_envelope(model_used, confidence, risk, reasons, Tier.SELF_HOSTED, ev),
+    )
 
 
 @router.post("/authenticity/{check_path}", response_model=AuthenticityResponse)
 def authenticity(check_path: str, body: AuthenticityRequest) -> AuthenticityResponse:
     check = (body.checkType or check_path.replace("-", "_")).upper()
     payload = body.payload or {}
-    settings = get_settings()
+    ev = str(payload.get("evidenceRef") or body.sessionId or "")
 
-    # ── Deterministic, genuinely-checkable variants ──
+    # ── Deterministic, genuinely-checkable variants (tier 2 / rules) ──
     if check == "DUAL_AUTH":
-        expected = payload.get("expectedChallenge")
-        provided = payload.get("providedChallenge")
+        expected, provided = payload.get("expectedChallenge"), payload.get("providedChallenge")
         if expected is not None and provided is not None:
             ok = str(expected) == str(provided)
             return AuthenticityResponse(
                 result="PASS" if ok else "FAIL",
                 score=95.0 if ok else 5.0,
-                modelVersion=MODEL_VERSION,
+                modelVersion=BASE_VERSION,
                 metadata={"check": check, "method": "challenge-match"},
+                decision=_envelope("challenge-match", 95.0 if ok else 90.0, 5.0 if ok else 95.0,
+                                   ["DUAL_AUTH_MATCH" if ok else "DUAL_AUTH_MISMATCH"], Tier.RULES, ev),
             )
 
     if check == "CAM_VIGUARD":
-        # Device-fingerprint consistency: PASS when the session's fingerprint
-        # matches the enrolled one, FAIL on mismatch, INCONCLUSIVE if unknown.
-        enrolled = payload.get("enrolledFingerprint")
-        seen = payload.get("observedFingerprint")
+        enrolled, seen = payload.get("enrolledFingerprint"), payload.get("observedFingerprint")
         if enrolled is not None and seen is not None:
             ok = str(enrolled) == str(seen)
             return AuthenticityResponse(
                 result="PASS" if ok else "FAIL",
                 score=90.0 if ok else 10.0,
-                modelVersion=MODEL_VERSION,
+                modelVersion=BASE_VERSION,
                 metadata={"check": check, "method": "device-fingerprint"},
+                decision=_envelope("device-fingerprint", 90.0, 10.0 if ok else 90.0,
+                                   ["FINGERPRINT_MATCH" if ok else "FINGERPRINT_MISMATCH"], Tier.RULES, ev),
             )
 
-    # ── ML-heavy variants: only a real verdict if a model is configured ──
-    if check in ML_HEAVY:
-        configured = (
-            settings.deepfake_image_model
-            if check in ("LIVE_FACE_SEAL", "SCENE_SEAL", "ANTI_FAKE_VIDEO")
-            else settings.voice_spoof_model
-        )
-        if not configured:
-            return AuthenticityResponse(
-                result="INCONCLUSIVE",
-                score=0.0,
-                modelVersion=MODEL_VERSION,
-                metadata={
-                    "check": check,
-                    "reason": "no deepfake/voice model configured; set the model env var to enable",
-                },
-            )
-        # A configured model would run here; until one is wired we stay honest.
-        return AuthenticityResponse(
-            result="INCONCLUSIVE",
-            score=0.0,
-            modelVersion=MODEL_VERSION,
-            metadata={"check": check, "reason": "model configured but inference not yet implemented"},
-        )
+    # ── Heavy ML tier ──
+    if check in IMAGE_CHECKS:
+        img = load_image_bytes(payload)
+        if img is None:
+            return _media_verdict(check, None, ev)
+        return _media_verdict(check, analyze_image(img), ev)
 
+    if check == "VOICE_MATCH_SEAL":
+        aud = load_audio_bytes(payload)
+        if aud is None:
+            return _media_verdict(check, None, ev)
+        return _media_verdict(check, analyze_audio(aud), ev)
+
+    # Unknown / insufficient signal.
     return AuthenticityResponse(
         result="INCONCLUSIVE",
         score=0.0,
-        modelVersion=MODEL_VERSION,
+        modelVersion=BASE_VERSION,
         metadata={"check": check, "reason": "insufficient signal in payload"},
+        decision=_envelope("n/a", 0.0, 0.0, ["INSUFFICIENT_SIGNAL"], Tier.HUMAN_REVIEW, ev),
     )

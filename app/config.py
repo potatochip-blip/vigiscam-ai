@@ -29,10 +29,13 @@ class Settings(BaseSettings):
     # tests where the model isn't available.
     warm_on_startup: bool = True
 
-    # Optional heavier models for the vision/voice authenticity tier. Left
-    # unset by default — those checks return INCONCLUSIVE until configured.
-    deepfake_image_model: str | None = None
-    voice_spoof_model: str | None = None
+    # Heavy authenticity tier (open, self-hosted, swappable). Defaulted to
+    # vetted Hugging Face checkpoints so the tier is active on deploy; set to
+    # "" to disable a check (→ INCONCLUSIVE). Models lazy-load on first use.
+    #  - image/face/scene/video-frame deepfake: ViT real-vs-fake classifier
+    #  - voice: wav2vec2 real-vs-spoof speech classifier
+    deepfake_image_model: str | None = "dima806/deepfake_vs_real_image_detection"
+    voice_spoof_model: str | None = "MelodyMachine/Deepfake-audio-detection-V2"
 
     # ── Hybrid pipeline controls ──────────────────────────────────────────────
     # Tier 5: any decision whose confidence is below this is flagged

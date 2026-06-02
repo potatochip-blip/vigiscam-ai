@@ -22,18 +22,49 @@ paraphrases that the backend's keyword stubs miss.
 | `POST /insights/victim-state` | Victim state assessment (9) | Zero-shot state classification |
 | `POST /insights/predicted-move` | Predicted next move (10) | State-machine over inferred stage |
 | `POST /osint/{type}` | OSINT enrichment (6) | Safe structural signals (TLD, punycode, disposable-email, digit patterns) — no PII, no network lookup |
-| `POST /authenticity/{type}` | Authenticity checks (7) | Deterministic variants real (DUAL_AUTH, CAM_VIGUARD); deepfake/voice/face/scene return INCONCLUSIVE until a heavy model is configured |
+| `POST /authenticity/{type}` | Authenticity checks (7) | Deterministic (DUAL_AUTH, CAM_VIGUARD) + **heavy ML**: deepfake image (LIVE_FACE_SEAL, SCENE_SEAL, ANTI_FAKE_VIDEO) + voice-spoof (VOICE_MATCH_SEAL) |
 
 Confidence + explainability (11) are emitted on every response (scores +
 top-label breakdown), which the backend persists on each AIDecision row.
 Clustering (5) consumes `/embeddings` (the backend clusters on the vectors).
 
-## What's the next tier (not yet built)
+## Heavy authenticity models (open, self-hosted, swappable)
 
-- **Deepfake / voice-spoof / face / scene** authenticity — heavy vision/audio
-  models + GPU + raw media. The contract branch + env hooks are in place
-  (`VIGISCAM_AI_DEEPFAKE_IMAGE_MODEL`, `VIGISCAM_AI_VOICE_SPOOF_MODEL`); wire a
-  model and implement the inference branch — the backend needs no change.
+The model ids are **configuration, not hardcoded** (env-overridable), so the
+layer is model-agnostic — swap a checkpoint without touching the contract.
+Defaults are vetted Hugging Face models chosen for the task:
+
+| Check | Default model | Why it fits |
+|---|---|---|
+| `LIVE_FACE_SEAL`, `SCENE_SEAL`, `ANTI_FAKE_VIDEO` | **`dima806/deepfake_vs_real_image_detection`** | ViT-base fine-tuned for real-vs-fake faces/images; the most-downloaded general deepfake-image classifier on the HF Hub; runs on CPU; binary `Real`/`Fake` labels the router maps directly. Video uses one sampled frame. |
+| `VOICE_MATCH_SEAL` | **`MelodyMachine/Deepfake-audio-detection-V2`** | wav2vec2-based real-vs-spoof speech classifier via the audio-classification pipeline; token-based label mapping handles `fake/real` and `spoof/bonafide`. |
+
+**Engineering honesty:** the label mapping is robust (case-insensitive token
+match) and every path is graceful — a bad model id, missing media, or
+inference error returns `INCONCLUSIVE`, never a crash. The image model is the
+strongest *general* deepfake fit; a dedicated face-anti-spoofing checkpoint
+(e.g. MiniFASNet/Silent-Face) can be swapped into `LIVE_FACE_SEAL` later via
+the same env var. **Verify the exact audio repo id + its label names against
+your data before trusting production verdicts** — the id is swappable for any
+ASVspoof/anti-spoofing wav2vec2 checkpoint.
+
+### Media: how the backend must send it
+
+The heavy checks need the raw media in the `payload`:
+`imageBase64`/`imageUrl` (or `frameBase64`/`frameUrl` for video) and
+`audioBase64`/`audioUrl`. The current backend authenticity flow is
+contract-only and does **not** yet capture/forward media — wiring that
+(capture image/audio on the session → include in the authenticity payload)
+is a small backend follow-up. Until then these checks return `INCONCLUSIVE`
+(no media) even with the models live.
+
+Models **lazy-load on first use** (not baked into the image, to keep the build
+lean) and download to `HF_HOME`. First authenticity call is slow (~30–60 s
+download + load); set `--min-replicas 1` so the container stays warm. On CPU
+inference is a few seconds/image; a GPU workload profile speeds it up.
+
+## Still the next tier
+
 - **Network-backed OSINT** (passive DNS, whois age, cert transparency) —
   requires allow-listed outbound calls; gated off by default.
 - **Feedback loop / retraining (12)** — the backend already audits every AI

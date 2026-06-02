@@ -111,3 +111,5 @@ class AuthenticityResponse(BaseModel):
     score: float  # 0–100
     modelVersion: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Hybrid-pipeline audit envelope, persisted verbatim by the backend.
+    decision: dict[str, Any] | None = None
