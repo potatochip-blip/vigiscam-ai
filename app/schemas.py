@@ -17,6 +17,10 @@ class NlpClassificationInput(BaseModel):
     text: str
     indicatorType: str | None = None
     hintedCategory: str | None = None
+    # Caller hint: route enterprise / high-risk cases to the external tier.
+    highRisk: bool = False
+    # Optional backend evidence id, echoed into the decision envelope.
+    evidenceRef: str | None = None
 
 
 class NlpClassificationOutput(BaseModel):
@@ -25,6 +29,10 @@ class NlpClassificationOutput(BaseModel):
     scamScore: float  # 0–100
     manipulationTactics: list[str]
     modelVersion: str
+    # Hybrid-pipeline audit envelope (model, version, confidence, reason codes,
+    # risk score, evidence ref, tier, requiresHumanReview). The backend stores
+    # this verbatim on the AIDecision row.
+    decision: dict[str, Any] | None = None
 
 
 # ── Embeddings — POST /embeddings ────────────────────────────────────────────

@@ -56,16 +56,49 @@ Then point the backend at it:
 AI_SERVICE_URL=http://localhost:8000
 ```
 
+## Hybrid, model-agnostic pipeline
+
+Every classification runs a layered pipeline (see `app/pipeline.py`):
+
+1. **Self-hosted open model** (tier 1) — MiniLM semantic category + scam score.
+2. **Rule-based detection** (tier 2, `app/rules.py`) — high-precision obvious
+   signals ("read me the gift card code", "install AnyDesk") that emit explicit
+   reason codes and can floor the risk score.
+3. **Vector/embedding similarity** (tier 3) — scam-space vs. a benign anchor set.
+4. **External API fallback** (tier 4, `app/external.py`) — OFF by default;
+   optional second opinion from any OpenAI-compatible model for low-confidence
+   or caller-flagged high-risk/enterprise cases. Never a hard dependency.
+5. **Human review** (tier 5) — verdicts below the confidence threshold are
+   flagged `requiresHumanReview: true` for the backend reviewer queue.
+
+Every response carries a **decision envelope** — `modelUsed`, `modelVersion`,
+`confidence`, `riskScore`, `reasonCodes`, `tier`, `requiresHumanReview`,
+`evidenceRef` — which the backend persists verbatim on the AIDecision row.
+
 ## Deploy (Azure Container Apps, alongside the backend)
 
+Push-to-deploy via `.github/workflows/deploy.yml` (mirrors the backend).
+One-time setup:
+
+1. Create a GitHub repo (e.g. `vigiscam-ai`) and push this directory.
+2. Add the same OIDC **secrets** the backend repo uses: `AZURE_CLIENT_ID`,
+   `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`.
+3. Add repo **variables**: `ACR_NAME=acrvigiscamdevj37c5cbp6o2tq`,
+   `RESOURCE_GROUP=rg-vigiscam-dev`, `AI_CONTAINER_APP_NAME=ca-vigiscam-dev-ai`.
+4. Create the container app once (internal ingress so only the backend reaches
+   it) in Cloud Shell, then point the backend at it:
+
 ```bash
-az acr build --registry <acr> --image vigiscam-ai:latest .
+az acr build --registry acrvigiscamdevj37c5cbp6o2tq --image vigiscam-ai:latest .
 az containerapp create -n ca-vigiscam-dev-ai -g rg-vigiscam-dev \
-  --image <acr>.azurecr.io/vigiscam-ai:latest --target-port 8000 --ingress internal
-# then set AI_SERVICE_URL on the backend container app to the AI app's internal URL
+  --environment <your-container-app-env> \
+  --image acrvigiscamdevj37c5cbp6o2tq.azurecr.io/vigiscam-ai:latest \
+  --target-port 8000 --ingress internal --cpu 2 --memory 4Gi --min-replicas 1
+az containerapp update -n ca-vigiscam-dev-backend -g rg-vigiscam-dev \
+  --set-env-vars "AI_SERVICE_URL=https://ca-vigiscam-dev-ai.internal.<env-domain>"
 ```
 
-Use **internal ingress** so only the backend can reach it. Once
+After that, every `git push` to main rebuilds + rolls out automatically. Once
 `AI_SERVICE_URL` is set, `GET /api/v1/intelligence/ai-status` on the backend
 flips the engines to `EXTERNAL`.
 
