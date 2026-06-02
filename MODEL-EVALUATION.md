@@ -1,0 +1,78 @@
+# Deepfake Image Model — Evaluation
+
+Evaluation of the default authenticity image model
+(`dima806/deepfake_vs_real_image_detection`) run live through the deployed
+worker via the backend `POST /api/v1/intelligence/authenticity`
+(`LIVE_FACE_SEAL`), 2026-06-02.
+
+## Method
+
+Three labelled samples, each fetched by the worker from a public URL and run
+through the real model (`source=EXTERNAL`):
+
+| Sample | Label | Source |
+|---|---|---|
+| Portrait A | REAL | Wikimedia Commons (`Special:FilePath`) |
+| Portrait B | REAL | Wikimedia Commons (`Special:FilePath`) |
+| "Deep fake Tom Cruise" | FAKE | armywarcollege.edu (the @deeptomcruise face-swap) |
+
+(Two further candidate links were not usable: a Facebook **reel** is video, not
+an image, and a `grok.com/imagine` link is an HTML page — image checks need a
+direct image-file URL or a video frame.)
+
+## Results
+
+| Sample | Expected | Result | score | fakeProbability | topLabel |
+|---|---|---|---|---|---|
+| Portrait A (real) | PASS | **PASS** ✅ | 94 | 0.053 | Real |
+| Portrait B (real) | PASS | **PASS** ✅ | 99 | 0.004 | Real |
+| Deepfake Tom Cruise | FAIL | **PASS** ❌ | 99 | 0.007 | Real |
+
+## Findings
+
+1. **The pipeline is correct end-to-end.** Real photos are authenticated
+   (`PASS`), the call runs on the real model (`source=EXTERNAL`), and the full
+   decision envelope (model, version, confidence, reason codes, risk score,
+   evidenceRef) is returned and persisted.
+2. **The model has a critical false-negative on a high-quality face-swap
+   deepfake** — it classified the @deeptomcruise deepfake as "Real" at 0.99.
+   For an anti-scam authenticity check, a false negative (calling a deepfake
+   genuine) is the most dangerous error.
+
+## Why this is expected (not a bug)
+
+Deepfake-detector **generalisation across generation methods and datasets is
+an open research problem.** A classifier trained on one family of fakes
+routinely fails on another. The @deeptomcruise videos are exceptionally
+high-quality (VFX artist + impersonator + face-swap) and defeat most
+open-source still-image detectors. No single open image model reliably catches
+top-tier deepfakes from one frame.
+
+## Recommendation — treat the image model as one signal, not an authority
+
+The robust, already-built mitigation is **multi-signal**, with the image model
+as a *contributing input*:
+
+| Signal | Why a deepfake can't beat it |
+|---|---|
+| **CAM_VIGUARD** (device-fingerprint consistency) | Tied to the enrolled device, not the pixels |
+| **DUAL_AUTH** (live challenge–response) | Requires a real-time correct response |
+| **Behavioural / script signals** (NLP, tactics, urgency, payment pressure) | Detects the *scam*, independent of face realism |
+| **Human-review flag** on low confidence | A reviewer adjudicates ambiguous cases |
+| **Image deepfake model** | Catches low/mid-quality fakes; weights into the score |
+
+The system already composes these — the authenticity verdict is never the sole
+gate.
+
+## If/when a production image model is chosen
+
+- The model id is **configuration, not code** (`VIGISCAM_AI_DEEPFAKE_IMAGE_MODEL`),
+  so swapping a checkpoint is one env var + a restart — no code or backend
+  change. Candidates to evaluate: `prithivMLmods/Deep-Fake-Detector-Model`,
+  `Wvolf/ViT_Deepfake_Detection`, and any FaceForensics++/DFDC/Celeb-DF-trained
+  checkpoint.
+- **Choose it against a labelled test set** (FaceForensics++ / DFDC / Celeb-DF),
+  not ad-hoc samples — report accuracy, and especially the **false-negative
+  rate** on the deepfake class, which is the metric that matters here.
+- Consider an **ensemble** (average several checkpoints) and per-frame
+  aggregation for video, to reduce single-model blind spots.
