@@ -24,11 +24,24 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Pre-download the always-on embedding backbone so the first request is fast
-# and no outbound HF access is needed for the semantic tier at runtime. The
-# heavy authenticity models lazy-load on first use (kept out of the image to
-# keep the build lean; they download to HF_HOME on first authenticity call).
+# and no outbound HF access is needed for the semantic tier at runtime.
 RUN python -c "from sentence_transformers import SentenceTransformer; \
     SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+
+# Bake the deepfake-image ENSEMBLE into the image so authenticity calls need no
+# runtime HF download (deterministic cold starts, no outbound egress, no
+# first-call latency spike). Kept BEFORE `COPY app` so this ~700MB layer is
+# cached across app-only code changes. Must stay in sync with the
+# `deepfake_image_models` default in app/config.py.
+ARG DEEPFAKE_IMAGE_MODELS="dima806/deepfake_vs_real_image_detection,prithivMLmods/Deep-Fake-Detector-Model"
+RUN python -c "import os; from transformers import pipeline; \
+    [pipeline('image-classification', model=m, device=-1) \
+     for m in os.environ['DEEPFAKE_IMAGE_MODELS'].split(',') if m]"
+# Bake the voice-spoof model too (authenticity VOICE_MATCH_SEAL).
+ARG VOICE_SPOOF_MODEL="MelodyMachine/Deepfake-audio-detection-V2"
+RUN python -c "import os; from transformers import pipeline; \
+    pipeline('audio-classification', model=os.environ['VOICE_SPOOF_MODEL'], device=-1)" \
+    || echo "voice model bake skipped (lazy-loads at runtime)"
 
 COPY app ./app
 
