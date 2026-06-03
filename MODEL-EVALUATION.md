@@ -48,6 +48,31 @@ high-quality (VFX artist + impersonator + face-swap) and defeat most
 open-source still-image detectors. No single open image model reliably catches
 top-tier deepfakes from one frame.
 
+## Update (2026-06-02) — ENSEMBLE re-eval ✅ catches the deepfake
+
+The worker now runs an **ensemble** (`vision.py`): `dima806` **+**
+`prithivMLmods/Deep-Fake-Detector-Model`, aggregating by **MAX fake-probability**
+(if any model confidently flags a fake, the verdict reflects it). Re-running the
+exact same 3 samples through the real ensemble code (`training/eval_ensemble.py`):
+
+| Sample | Expected | Result | ensemble fakeProb | dima806 | prithivMLmods |
+|---|---|---|---|---|---|
+| Portrait A (real) | PASS | **PASS** ✅ | 0.053 | 0.053 | 0.008 |
+| Portrait B (real) | PASS | **PASS** ✅ | 0.395 | 0.004 | 0.395 |
+| Deepfake Tom Cruise | FAIL | **FAIL** ✅ | **0.922** | 0.007 | **0.922** |
+
+**Misclassified: 0 / 3.** The @deeptomcruise face-swap that the single
+`dima806` model called "Real" at 0.99 is now correctly flagged **FAKE at 0.922**
+— `prithivMLmods` catches it and the MAX-aggregation surfaces it. Both real
+portraits still PASS (Portrait B rose to 0.395 but stayed under the 0.5 FAIL
+threshold — the cost of higher sensitivity is a smaller margin on reals, worth
+watching but not a misclassification).
+
+**Caveat:** 3 samples is a smoke test, not a benchmark. The fine-tuning pipeline
+in `training/` (scored on a held-out FaceForensics++/DFDC/Celeb-DF set, by
+false-negative rate) remains the path to a defensible production number. But the
+ensemble demonstrably closes the specific blind spot found in the first eval.
+
 ## Recommendation — treat the image model as one signal, not an authority
 
 The robust, already-built mitigation is **multi-signal**, with the image model

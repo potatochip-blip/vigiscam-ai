@@ -17,3 +17,6 @@ venv/
 
 # stray nested clone — never track
 /vigiscam-ai/
+
+# local eval virtualenv
+.eval-venv/
