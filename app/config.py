@@ -29,13 +29,25 @@ class Settings(BaseSettings):
     # tests where the model isn't available.
     warm_on_startup: bool = True
 
-    # Heavy authenticity tier (open, self-hosted, swappable). Defaulted to
-    # vetted Hugging Face checkpoints so the tier is active on deploy; set to
-    # "" to disable a check (→ INCONCLUSIVE). Models lazy-load on first use.
-    #  - image/face/scene/video-frame deepfake: ViT real-vs-fake classifier
-    #  - voice: wav2vec2 real-vs-spoof speech classifier
-    deepfake_image_model: str | None = "dima806/deepfake_vs_real_image_detection"
+    # Heavy authenticity tier (open, self-hosted, swappable). Models lazy-load
+    # on first use; set to "" to disable a check (→ INCONCLUSIVE).
+    #
+    # Image deepfake is an ENSEMBLE: a comma-separated list of checkpoints that
+    # are each run and aggregated (a fake one model misses, another may catch).
+    # Point this at a single fine-tuned checkpoint (local path or HF id) once
+    # you've trained one — see training/README.md.
+    deepfake_image_models: str = (
+        "dima806/deepfake_vs_real_image_detection,prithivMLmods/Deep-Fake-Detector-Model"
+    )
+    # Back-compat single-model override; when set it wins over the list.
+    deepfake_image_model: str | None = None
     voice_spoof_model: str | None = "MelodyMachine/Deepfake-audio-detection-V2"
+
+    @property
+    def image_model_list(self) -> list[str]:
+        if self.deepfake_image_model:
+            return [self.deepfake_image_model]
+        return [m.strip() for m in self.deepfake_image_models.split(",") if m.strip()]
 
     # ── Hybrid pipeline controls ──────────────────────────────────────────────
     # Tier 5: any decision whose confidence is below this is flagged
