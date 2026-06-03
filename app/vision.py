@@ -107,21 +107,33 @@ def analyze_image(image_bytes: bytes) -> dict | None:
     if not per_model:
         return None
 
-    # Aggregate: MAX fake-probability across models (sensitivity), and report
-    # the dominant label of the model that drove the verdict.
+    # Aggregate with a SENSITIVITY-first rule: the ensemble's fake belief is the
+    # MAX fake-probability across models — if any detector is confident a sample
+    # is fake, the verdict reflects it (a false negative, calling a deepfake
+    # genuine, is the most dangerous error for an anti-scam check).
+    #
+    # real_prob MUST be the complement of that belief, NOT an independent max:
+    # the two probabilities come from different models, so maxing them
+    # separately would let one model's high "real" reading cancel another
+    # model's high "fake" reading (the downstream verdict compares fake_prob vs
+    # real_prob). Complementing keeps them coherent: fake>0.5 ⟺ FAIL.
     fake_probs = {m: r["fake_prob"] for m, r in per_model.items()}
     driver = max(fake_probs, key=fake_probs.get)
-    agg_fake = per_model[driver]["fake_prob"]
-    agg_real = max((r["real_prob"] for r in per_model.values()), default=0.0)
-    # If fake didn't dominate anywhere, real_prob should win.
-    if agg_fake <= 0:
-        agg_real = max(r["real_prob"] for r in per_model.values())
+    agg_fake = float(per_model[driver]["fake_prob"])
+    agg_real = max(0.0, 1.0 - agg_fake)
+
+    # Report the label/score of whichever model drove the verdict: the fake
+    # driver when fake is the belief, else the most-confident "real" reading.
+    if agg_fake >= agg_real:
+        label_src = per_model[driver]
+    else:
+        label_src = max(per_model.values(), key=lambda r: r["real_prob"])
 
     return {
         "fake_prob": agg_fake,
-        "real_prob": agg_real if agg_fake <= agg_real else (1.0 - agg_fake),
-        "top_label": per_model[driver]["top_label"],
-        "top_score": per_model[driver]["top_score"],
+        "real_prob": agg_real,
+        "top_label": label_src["top_label"],
+        "top_score": label_src["top_score"],
         "model": "+".join(per_model.keys()),
         "labels_recognized": True,
         "ensemble": {m: round(r["fake_prob"], 3) for m, r in per_model.items()},
