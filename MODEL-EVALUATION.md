@@ -73,6 +73,32 @@ in `training/` (scored on a held-out FaceForensics++/DFDC/Celeb-DF set, by
 false-negative rate) remains the path to a defensible production number. But the
 ensemble demonstrably closes the specific blind spot found in the first eval.
 
+## Live Azure verification (2026-06-03) — end-to-end, EXTERNAL worker ✅
+
+Verified through the **deployed backend** (`POST /api/v1/intelligence/authenticity`,
+`LIVE_FACE_SEAL`) calling the **deployed AI worker**, sending the image as
+base64 bytes (`scripts/smoke-authenticity.ps1` in the backend repo):
+
+| Sample | Expected | Result | score | riskScore | reasonCodes | source |
+|---|---|---|---|---|---|---|
+| Deepfake Tom Cruise | FAIL | **FAIL** ✅ | 92 | 92.2 | DEEPFAKE_IMAGE_MODEL, TOP_LABEL:Fake:0.922, **FAKE_DOMINANT** | EXTERNAL |
+| Real portrait | PASS | **PASS** ✅ | 94 | 5.3 | DEEPFAKE_IMAGE_MODEL, TOP_LABEL:Real:0.992, REAL_DOMINANT | EXTERNAL |
+
+Two bugs were found and fixed during this verification (both would have hit any
+real client, not just the test):
+
+1. **Backend body limit** — Express's 100 KB default rejected every base64 image
+   with `PayloadTooLargeError` before it reached the worker. Raised to 40 MB
+   (covers the worker's 25 MB media cap + base64 inflation).
+2. **Ensemble aggregation** — the ensemble returned `fake_prob` = max-fake from
+   one model alongside `real_prob` = max-real from a *different* model, so the
+   verdict comparison let a high "real" reading cancel a high "fake" reading (a
+   confirmed Fake@0.922 came back `PASS`/`REAL_DOMINANT`). Fixed so `real_prob`
+   is the **complement** of the sensitivity (max-fake) belief: `fake>0.5 ⟺ FAIL`.
+
+The decision envelope (model, version, confidence, risk score, reason codes,
+evidence ref, requiresHumanReview) is returned and persisted on every call.
+
 ## Recommendation — treat the image model as one signal, not an authority
 
 The robust, already-built mitigation is **multi-signal**, with the image model
